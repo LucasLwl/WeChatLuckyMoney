@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">小红包</string>
+
+    <string name="service_description">打开即可开启自动抢红包功能</string>
 </resources>

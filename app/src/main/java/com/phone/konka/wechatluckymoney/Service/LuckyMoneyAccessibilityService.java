@@ -21,49 +21,65 @@ public class LuckyMoneyAccessibilityService extends AccessibilityService {
 
     private boolean haveNotify = false;
 
-    private boolean isScreenLocked = false;
+    private boolean haveLuckyMoney = false;
 
-    private PowerManager mPowerManager;
+    private boolean isInLaunchUI = false;
+
+    private boolean isScreenLocked = false;
 
     private KeyguardManager mKeyguardManager;
 
     private PowerManager.WakeLock mWakeLock;
 
-    private KeyguardManager.KeyguardLock mkeyguardLock;
+    private KeyguardManager.KeyguardLock mKeyguardLock;
+
+    private AccessibilityNodeInfo mCacheNode = null;
 
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
 
-        mPowerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
         mKeyguardManager = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
-        mWakeLock = mPowerManager.newWakeLock(PowerManager.ACQUIRE_CAUSES_WAKEUP | PowerManager.SCREEN_BRIGHT_WAKE_LOCK, "bright");
-        mkeyguardLock = mKeyguardManager.newKeyguardLock("1");
+        mWakeLock = powerManager.newWakeLock(PowerManager.ACQUIRE_CAUSES_WAKEUP | PowerManager.SCREEN_BRIGHT_WAKE_LOCK, "bright");
+        mKeyguardLock = mKeyguardManager.newKeyguardLock("luckyMoney");
     }
+
+    @Override
+    public void onInterrupt() {
+    }
+
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
 
         int type = event.getEventType();
+        String className = event.getClassName().toString();
         switch (type) {
             case AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED:
-                if (isScreenLocked())
-                    releaseLock(event);
-                else {
+                if (isLuckyMoneyNotification(event)) {
+                    if (isScreenLocked())
+                        releaseLock();
                     handleNotification(event);
                 }
                 break;
             case AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED:
-            case AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED:
-                if (haveNotify) {
-                    String className = event.getClassName().toString();
-                    if (className.equals("com.tencent.mm.ui.LauncherUI")) {
-                        handleLuckyMoney();
-                    } else if (className.equals("com.tencent.mm.plugin.luckymoney.ui.LuckyMoneyReceiveUI")) {
-                        openLuckyMoney();
-                    } else if (className.equals("com.tencent.mm.plugin.luckymoney.ui.LuckyMoneyDetailUI")) {
-                        close();
+                if (className.equals("com.tencent.mm.ui.LauncherUI"))
+                    isInLaunchUI = true;
+                else {
+                    isInLaunchUI = false;
+                    if (haveLuckyMoney) {
+                        if (className.equals("com.tencent.mm.plugin.luckymoney.ui.LuckyMoneyReceiveUI")) {
+                            openLuckyMoney();
+                        } else if (!className.contains("com.tencent.mm.ui.base")) {
+                            close();
+                        }
                     }
+                }
+                break;
+            case AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED:
+                if (isInLaunchUI && !haveLuckyMoney) {
+                    handleLuckyMoney();
                 }
                 break;
         }
@@ -71,28 +87,39 @@ public class LuckyMoneyAccessibilityService extends AccessibilityService {
 
 
     /**
-     * 处理微信红包Notification
+     * 状态栏信息是否为红包信息
      *
      * @param event
+     * @return
      */
-    private void handleNotification(AccessibilityEvent event) {
+    private boolean isLuckyMoneyNotification(AccessibilityEvent event) {
         List<CharSequence> texts = event.getText();
         if (texts != null && !texts.isEmpty()) {
             for (CharSequence text : texts) {
                 String content = text.toString();
-                if (content.contains("微信红包")) {
-                    if (event.getParcelableData() != null &&
-                            event.getParcelableData() instanceof Notification) {
-                        Notification notification = (Notification) event.getParcelableData();
-                        PendingIntent pendingIntent = notification.contentIntent;
-                        try {
-                            pendingIntent.send();
-                            haveNotify = true;
-                        } catch (PendingIntent.CanceledException e) {
-                            e.printStackTrace();
-                        }
-                    }
-                }
+                if (content.contains("微信红包"))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 处理微信红包Notification
+     *
+     * @param event 状态栏事件
+     */
+
+    private void handleNotification(AccessibilityEvent event) {
+        if (event.getParcelableData() != null &&
+                event.getParcelableData() instanceof Notification) {
+            Notification notification = (Notification) event.getParcelableData();
+            PendingIntent pendingIntent = notification.contentIntent;
+            try {
+                pendingIntent.send();
+                haveNotify = true;
+            } catch (PendingIntent.CanceledException e) {
+                e.printStackTrace();
             }
         }
     }
@@ -101,7 +128,7 @@ public class LuckyMoneyAccessibilityService extends AccessibilityService {
     /**
      * 检查屏幕是否锁屏
      *
-     * @return
+     * @return 锁屏 true
      */
     private boolean isScreenLocked() {
         return mKeyguardManager.inKeyguardRestrictedInputMode();
@@ -112,12 +139,10 @@ public class LuckyMoneyAccessibilityService extends AccessibilityService {
      * 亮屏并且解锁
      * 无解锁密码时才有效
      */
-    private void releaseLock(AccessibilityEvent event) {
+    private void releaseLock() {
         isScreenLocked = true;
         mWakeLock.acquire();
-        mkeyguardLock.disableKeyguard();
-
-        handleNotification(event);
+        mKeyguardLock.disableKeyguard();
     }
 
 
@@ -127,16 +152,19 @@ public class LuckyMoneyAccessibilityService extends AccessibilityService {
     private void handleLuckyMoney() {
         AccessibilityNodeInfo rootNode = getRootInActiveWindow();
         AccessibilityNodeInfo node = recycleNode(rootNode);
-
         if (node != null) {
             if (node.isClickable()) {
+                haveLuckyMoney = true;
                 node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                node.recycle();
                 return;
             }
             AccessibilityNodeInfo parent = node.getParent();
             while (parent != null) {
                 if (parent.isClickable()) {
+                    haveLuckyMoney = true;
                     parent.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                    parent.recycle();
                     break;
                 }
                 parent = parent.getParent();
@@ -148,30 +176,32 @@ public class LuckyMoneyAccessibilityService extends AccessibilityService {
     /**
      * 查找聊天界面中的领取红包View
      *
-     * @param node
-     * @return
+     * @param rootNode 根节点
+     * @return 红包节点
      */
-    private AccessibilityNodeInfo recycleNode(AccessibilityNodeInfo node) {
+    private AccessibilityNodeInfo recycleNode(AccessibilityNodeInfo rootNode) {
 
-        List<AccessibilityNodeInfo> list = node.findAccessibilityNodeInfosByText("领取红包");
+        List<AccessibilityNodeInfo> list = rootNode.findAccessibilityNodeInfosByText("领取红包");
         if (list != null && !list.isEmpty())
             return list.get(0);
+
+
+//        领取自己发出去的红包
+        list = rootNode.findAccessibilityNodeInfosByText("查看红包");
+        if (list != null && !list.isEmpty()) {
+            int count = list.size();
+            AccessibilityNodeInfo node;
+            for (int i = 0; i < count; i++) {
+                node = list.get(i);
+                if (!node.equals(mCacheNode)) {
+                    mCacheNode = node;
+                    return node;
+                }
+            }
+        } else {
+            mCacheNode = null;
+        }
         return null;
-//        AccessibilityNodeInfo result = null;
-//        if (node.getChildCount() == 0) {
-//            if (node.getText() != null && node.getText().equals("获取红包")) {
-//                return node;
-//            } else
-//                return null;
-//        }
-//        for (int i = 0; i < node.getChildCount(); i++) {
-//            if (node.getChild(i) != null) {
-//                result = recycleNode(node.getChild(i));
-//                if (result != null)
-//                    return result;
-//            }
-//        }
-//        return result;
     }
 
 
@@ -179,25 +209,15 @@ public class LuckyMoneyAccessibilityService extends AccessibilityService {
      * 点击“开”，进行抢红包
      */
     private void openLuckyMoney() {
-
-//        if (rootNode != null) {
-//            List<AccessibilityNodeInfo> list = rootNode.findAccessibilityNodeInfosByViewId("@id/c2i");
-//            rootNode.recycle();
-//            for (AccessibilityNodeInfo node : list) {
-//                if (node.isClickable()) {
-//                    node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-//                    break;
-//                }
-//            }
-//        }
         AccessibilityNodeInfo rootNode = getRootInActiveWindow();
         int count = rootNode.getChildCount();
         for (int i = count - 1; i >= 0; i--) {
             AccessibilityNodeInfo node = rootNode.getChild(i);
             if (node.getClassName().equals("android.widget.Button")) {
-                if (node.isClickable())
+                if (node.isClickable()) {
                     node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                break;
+                    node.recycle();
+                }
             }
         }
     }
@@ -207,14 +227,14 @@ public class LuckyMoneyAccessibilityService extends AccessibilityService {
      * 关闭界面
      */
     private void close() {
-        haveNotify = false;
+        haveLuckyMoney = false;
         performGlobalAction(GLOBAL_ACTION_BACK);
-        new MyTimer().schedule();
+        if (haveNotify) {
+            haveNotify = false;
+            new MyTimer().schedule();
+        }
     }
 
-    @Override
-    public void onInterrupt() {
-    }
 
     private class MyTimer extends Timer {
         private TimerTask task;
@@ -227,7 +247,7 @@ public class LuckyMoneyAccessibilityService extends AccessibilityService {
                     performGlobalAction(GLOBAL_ACTION_HOME);
                     if (isScreenLocked) {
                         isScreenLocked = false;
-                        mkeyguardLock.reenableKeyguard();
+                        mKeyguardLock.reenableKeyguard();
                         mWakeLock.release();
                     }
                 }
